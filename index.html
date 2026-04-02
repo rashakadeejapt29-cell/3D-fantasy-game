@@ -1,0 +1,662 @@
+<!DOCTYPE html><html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>3D Village Game</title>
+  <style>
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #87bfff;
+      touch-action: none;
+      font-family: Arial, sans-serif;
+    }
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+    }
+    #ui {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+    }
+    #joystickBase {
+      position: absolute;
+      left: 22px;
+      bottom: 22px;
+      width: 130px;
+      height: 130px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.12);
+      border: 2px solid rgba(255,255,255,0.18);
+      backdrop-filter: blur(2px);
+      pointer-events: auto;
+    }
+    #joystickKnob {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 56px;
+      height: 56px;
+      margin-left: -28px;
+      margin-top: -28px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.35);
+      border: 2px solid rgba(255,255,255,0.35);
+      box-shadow: 0 0 18px rgba(0,0,0,0.18);
+    }
+    #jumpBtn {
+      position: absolute;
+      right: 22px;
+      bottom: 30px;
+      width: 86px;
+      height: 86px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.16);
+      color: white;
+      border: 2px solid rgba(255,255,255,0.25);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      pointer-events: auto;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    #hint {
+      position: absolute;
+      left: 12px;
+      top: 10px;
+      color: white;
+      text-shadow: 0 2px 6px rgba(0,0,0,0.35);
+      font-size: 14px;
+      pointer-events: none;
+    }
+    #msg {
+      position: absolute;
+      left: 50%;
+      top: 18px;
+      transform: translateX(-50%);
+      padding: 8px 14px;
+      border-radius: 12px;
+      color: white;
+      background: rgba(0,0,0,0.28);
+      text-shadow: 0 1px 3px rgba(0,0,0,0.5);
+      font-size: 14px;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.35s ease;
+    }
+    #msg.show { opacity: 1; }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <div id="hint">Move with the joystick. Tap jump.</div>
+    <div id="msg"></div>
+    <div id="joystickBase">
+      <div id="joystickKnob"></div>
+    </div>
+    <div id="jumpBtn">JUMP</div>
+  </div>  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r160/three.min.js"></script>  <script>
+    // ---------- Scene setup ----------
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x87bfff);
+    scene.fog = new THREE.Fog(0x87bfff, 40, 180);
+
+    const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 500);
+    camera.position.set(0, 4, 8);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    document.body.appendChild(renderer.domElement);
+
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x476b3a, 1.2);
+    scene.add(hemi);
+
+    const sun = new THREE.DirectionalLight(0xfff4d6, 1.8);
+    sun.position.set(20, 30, 10);
+    sun.castShadow = true;
+    sun.shadow.mapSize.width = 2048;
+    sun.shadow.mapSize.height = 2048;
+    sun.shadow.camera.left = -60;
+    sun.shadow.camera.right = 60;
+    sun.shadow.camera.top = 60;
+    sun.shadow.camera.bottom = -60;
+    sun.shadow.camera.near = 1;
+    sun.shadow.camera.far = 100;
+    scene.add(sun);
+
+    // ---------- Ground ----------
+    const groundGeo = new THREE.PlaneGeometry(300, 300, 64, 64);
+    const pos = groundGeo.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i);
+      const y = pos.getY(i);
+      const dist = Math.sqrt(x * x + y * y);
+      const height = Math.sin(x * 0.12) * 0.5 + Math.cos(y * 0.11) * 0.5 + Math.sin(dist * 0.15) * 0.7;
+      pos.setZ(i, height * 0.8);
+    }
+    pos.needsUpdate = true;
+    groundGeo.computeVertexNormals();
+
+    const groundMat = new THREE.MeshStandardMaterial({ color: 0x4c9a3a, flatShading: true });
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    function clamp(v, min, max) {
+      return Math.max(min, Math.min(max, v));
+    }
+
+    function setMsg(text, time = 1400) {
+      msg.textContent = text;
+      msg.classList.add('show');
+      clearTimeout(setMsg._t);
+      setMsg._t = setTimeout(() => msg.classList.remove('show'), time);
+    }
+
+    // ---------- World objects ----------
+    function makeTree(x, z, scale = 1) {
+      const group = new THREE.Group();
+
+      const trunk = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.18 * scale, 0.24 * scale, 1.6 * scale, 6),
+        new THREE.MeshStandardMaterial({ color: 0x7a4e2a })
+      );
+      trunk.position.y = 0.8 * scale;
+      trunk.castShadow = true;
+      group.add(trunk);
+
+      const leaves1 = new THREE.Mesh(
+        new THREE.ConeGeometry(0.95 * scale, 1.9 * scale, 8),
+        new THREE.MeshStandardMaterial({ color: 0x2f7d32, flatShading: true })
+      );
+      leaves1.position.y = 2.1 * scale;
+      leaves1.castShadow = true;
+      group.add(leaves1);
+
+      const leaves2 = new THREE.Mesh(
+        new THREE.ConeGeometry(0.72 * scale, 1.5 * scale, 8),
+        new THREE.MeshStandardMaterial({ color: 0x3b8f39, flatShading: true })
+      );
+      leaves2.position.y = 2.8 * scale;
+      leaves2.castShadow = true;
+      group.add(leaves2);
+
+      group.position.set(x, 0, z);
+      scene.add(group);
+      return group;
+    }
+
+    function makeHouse(x, z) {
+      const house = new THREE.Group();
+
+      const base = new THREE.Mesh(
+        new THREE.BoxGeometry(3.2, 2.3, 2.8),
+        new THREE.MeshStandardMaterial({ color: 0xc98c55 })
+      );
+      base.position.y = 1.15;
+      base.castShadow = true;
+      base.receiveShadow = true;
+      house.add(base);
+
+      const roof = new THREE.Mesh(
+        new THREE.ConeGeometry(2.3, 1.8, 4),
+        new THREE.MeshStandardMaterial({ color: 0x7b2f25, flatShading: true })
+      );
+      roof.position.y = 3.0;
+      roof.rotation.y = Math.PI / 4;
+      roof.castShadow = true;
+      house.add(roof);
+
+      const door = new THREE.Mesh(
+        new THREE.BoxGeometry(0.7, 1.2, 0.08),
+        new THREE.MeshStandardMaterial({ color: 0x5b3a1d })
+      );
+      door.position.set(0, 0.6, 1.43);
+      door.castShadow = true;
+      house.add(door);
+
+      const winMat = new THREE.MeshStandardMaterial({ color: 0x9ed4ff, emissive: 0x1a2a33, emissiveIntensity: 0.15 });
+      const w1 = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.55, 0.06), winMat);
+      w1.position.set(-0.95, 1.25, 1.43);
+      house.add(w1);
+      const w2 = w1.clone();
+      w2.position.x = 0.95;
+      house.add(w2);
+
+      house.position.set(x, 0, z);
+      scene.add(house);
+      return house;
+    }
+
+    function makeFenceSegment(x, z, rotY, length = 1.2) {
+      const seg = new THREE.Group();
+      const railMat = new THREE.MeshStandardMaterial({ color: 0x8b5a2b });
+      const postMat = new THREE.MeshStandardMaterial({ color: 0x6f431d });
+
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(length, 0.12, 0.12), railMat);
+      rail.position.y = 0.85;
+      rail.castShadow = true;
+      seg.add(rail);
+
+      const post1 = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.0, 0.12), postMat);
+      post1.position.set(-length / 2, 0.5, 0);
+      post1.castShadow = true;
+      seg.add(post1);
+
+      const post2 = post1.clone();
+      post2.position.x = length / 2;
+      seg.add(post2);
+
+      seg.position.set(x, 0, z);
+      seg.rotation.y = rotY;
+      scene.add(seg);
+      return seg;
+    }
+
+    function makeMountain(x, z, scale = 1) {
+      const mountain = new THREE.Group();
+      const geo = new THREE.ConeGeometry(8 * scale, 18 * scale, 4);
+      const mat = new THREE.MeshStandardMaterial({ color: 0x8a8f96, flatShading: true });
+      const m = new THREE.Mesh(geo, mat);
+      m.position.y = 9 * scale;
+      m.rotation.y = Math.PI / 4;
+      m.castShadow = true;
+      m.receiveShadow = true;
+      mountain.add(m);
+
+      const snow = new THREE.Mesh(
+        new THREE.ConeGeometry(3.2 * scale, 5.3 * scale, 4),
+        new THREE.MeshStandardMaterial({ color: 0xf4f7f7, flatShading: true })
+      );
+      snow.position.y = 15 * scale;
+      snow.rotation.y = Math.PI / 4;
+      mountain.add(snow);
+
+      mountain.position.set(x, -0.5, z);
+      scene.add(mountain);
+      return mountain;
+    }
+
+    function makeGoblin(x, z) {
+      const goblin = new THREE.Group();
+      const bodyMat = new THREE.MeshStandardMaterial({ color: 0x38a53f, flatShading: true });
+      const darkMat = new THREE.MeshStandardMaterial({ color: 0x2a5b2d, flatShading: true });
+      const eyeMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
+      const pupilMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
+
+      const body = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1.1, 0.55), bodyMat);
+      body.position.y = 0.95;
+      body.castShadow = true;
+      goblin.add(body);
+
+      const head = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.75, 0.75), bodyMat);
+      head.position.y = 1.8;
+      head.castShadow = true;
+      goblin.add(head);
+
+      const earGeo = new THREE.BoxGeometry(0.12, 0.35, 0.12);
+      const earL = new THREE.Mesh(earGeo, bodyMat);
+      earL.position.set(-0.48, 1.95, 0);
+      earL.rotation.z = -0.5;
+      goblin.add(earL);
+      const earR = earL.clone();
+      earR.position.x = 0.48;
+      earR.rotation.z = 0.5;
+      goblin.add(earR);
+
+      const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 8), eyeMat);
+      eyeL.position.set(-0.16, 1.84, 0.39);
+      goblin.add(eyeL);
+      const eyeR = eyeL.clone();
+      eyeR.position.x = 0.16;
+      goblin.add(eyeR);
+      const pupilL = new THREE.Mesh(new THREE.SphereGeometry(0.025, 8, 8), pupilMat);
+      pupilL.position.set(-0.16, 1.84, 0.44);
+      goblin.add(pupilL);
+      const pupilR = pupilL.clone();
+      pupilR.position.x = 0.16;
+      goblin.add(pupilR);
+
+      const legGeo = new THREE.BoxGeometry(0.18, 0.55, 0.18);
+      const leg1 = new THREE.Mesh(legGeo, darkMat);
+      leg1.position.set(-0.18, 0.28, 0);
+      leg1.castShadow = true;
+      goblin.add(leg1);
+      const leg2 = leg1.clone();
+      leg2.position.x = 0.18;
+      goblin.add(leg2);
+
+      const armGeo = new THREE.BoxGeometry(0.15, 0.55, 0.15);
+      const arm1 = new THREE.Mesh(armGeo, bodyMat);
+      arm1.position.set(-0.58, 1.15, 0);
+      arm1.rotation.z = 0.4;
+      arm1.castShadow = true;
+      goblin.add(arm1);
+      const arm2 = arm1.clone();
+      arm2.position.x = 0.58;
+      arm2.rotation.z = -0.4;
+      goblin.add(arm2);
+
+      goblin.position.set(x, 0, z);
+      scene.add(goblin);
+      return goblin;
+    }
+
+    function makePlayer() {
+      const player = new THREE.Group();
+      const skin = new THREE.MeshStandardMaterial({ color: 0xf0c7a5 });
+      const shirt = new THREE.MeshStandardMaterial({ color: 0x345dff, flatShading: true });
+      const pants = new THREE.MeshStandardMaterial({ color: 0x333333, flatShading: true });
+      const shoe = new THREE.MeshStandardMaterial({ color: 0x222222 });
+
+      const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.45, 0.85, 4, 8), shirt);
+      body.position.y = 1.3;
+      body.castShadow = true;
+      player.add(body);
+
+      const head = new THREE.Mesh(new THREE.SphereGeometry(0.34, 16, 16), skin);
+      head.position.y = 2.25;
+      head.castShadow = true;
+      player.add(head);
+
+      const legGeo = new THREE.CylinderGeometry(0.12, 0.13, 0.8, 8);
+      const legL = new THREE.Mesh(legGeo, pants);
+      legL.position.set(-0.16, 0.4, 0);
+      legL.castShadow = true;
+      player.add(legL);
+      const legR = legL.clone();
+      legR.position.x = 0.16;
+      player.add(legR);
+
+      const footGeo = new THREE.BoxGeometry(0.18, 0.08, 0.34);
+      const footL = new THREE.Mesh(footGeo, shoe);
+      footL.position.set(-0.16, 0.03, 0.07);
+      footL.castShadow = true;
+      player.add(footL);
+      const footR = footL.clone();
+      footR.position.x = 0.16;
+      player.add(footR);
+
+      const armGeo = new THREE.CylinderGeometry(0.08, 0.09, 0.72, 8);
+      const armL = new THREE.Mesh(armGeo, skin);
+      armL.position.set(-0.55, 1.55, 0);
+      armL.rotation.z = 0.45;
+      armL.castShadow = true;
+      player.add(armL);
+      const armR = armL.clone();
+      armR.position.x = 0.55;
+      armR.rotation.z = -0.45;
+      player.add(armR);
+
+      player.position.set(0, 0, 8);
+      scene.add(player);
+      return player;
+    }
+
+    function makeCloud(x, y, z, s) {
+      const g = new THREE.Group();
+      const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 });
+      const puffs = [
+        [0, 0, 0, 1.4],
+        [1.1, 0.15, 0.1, 1.0],
+        [-1.0, 0.1, 0.2, 1.05],
+        [0.2, 0.4, 0.4, 0.9]
+      ];
+      for (const [dx, dy, dz, r] of puffs) {
+        const puff = new THREE.Mesh(new THREE.SphereGeometry(r * s, 10, 10), mat);
+        puff.position.set(dx * s, dy * s, dz * s);
+        g.add(puff);
+      }
+      g.position.set(x, y, z);
+      scene.add(g);
+      return g;
+    }
+
+    // ---------- Build the world ----------
+    makeMountain(-28, -70, 2.3);
+    makeMountain(28, -78, 2.1);
+    makeMountain(-10, -92, 1.7);
+
+    for (let i = 0; i < 36; i++) {
+      const angle = (i / 36) * Math.PI * 2;
+      const radius = 55 + (i % 3) * 4;
+      makeTree(Math.cos(angle) * radius, Math.sin(angle) * radius - 15, 0.85 + (i % 4) * 0.1);
+    }
+    for (let i = 0; i < 12; i++) {
+      makeTree(-42 + i * 4, 18 + (i % 3) * 2, 0.75);
+    }
+
+    // Village
+    makeHouse(8, -6);
+    makeHouse(12, -2);
+    makeHouse(5, 1);
+
+    const fenceX1 = -0.5, fenceX2 = 17.5, fenceZ1 = -9.5, fenceZ2 = 4.8;
+    for (let x = fenceX1; x <= fenceX2; x += 1.2) {
+      makeFenceSegment(x, fenceZ1, 0, 1.2);
+      makeFenceSegment(x, fenceZ2, 0, 1.2);
+    }
+    for (let z = fenceZ1 + 1.2; z <= fenceZ2 - 0.2; z += 1.2) {
+      makeFenceSegment(fenceX1, z, Math.PI / 2, 1.2);
+      makeFenceSegment(fenceX2, z, Math.PI / 2, 1.2);
+    }
+
+    const well = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.8, 0.9, 0.7, 12),
+      new THREE.MeshStandardMaterial({ color: 0x8c8c8c, flatShading: true })
+    );
+    well.position.set(9.5, 0.35, -1.5);
+    well.castShadow = true;
+    well.receiveShadow = true;
+    scene.add(well);
+
+    const wellRoof = new THREE.Mesh(
+      new THREE.ConeGeometry(1.2, 0.9, 4),
+      new THREE.MeshStandardMaterial({ color: 0x7b2f25, flatShading: true })
+    );
+    wellRoof.position.set(9.5, 1.25, -1.5);
+    wellRoof.rotation.y = Math.PI / 4;
+    wellRoof.castShadow = true;
+    scene.add(wellRoof);
+
+    const player = makePlayer();
+    const goblin = makeGoblin(14, 9);
+    const clouds = [
+      makeCloud(-30, 26, -55, 2.3),
+      makeCloud(18, 22, -42, 2.0),
+      makeCloud(44, 30, -60, 2.5)
+    ];
+
+    // ---------- Controls ----------
+    const move = { x: 0, y: 0 };
+    let jumpVelocity = 0;
+    let onGround = true;
+    const clock = new THREE.Clock();
+
+    const base = document.getElementById('joystickBase');
+    const knob = document.getElementById('joystickKnob');
+    const jumpBtn = document.getElementById('jumpBtn');
+    const msg = document.getElementById('msg');
+
+    let joyActive = false;
+    let joyPointerId = null;
+    let joyCenter = { x: 0, y: 0 };
+    const maxJoy = 40;
+
+    function updateJoy(px, py) {
+      const dx = px - joyCenter.x;
+      const dy = py - joyCenter.y;
+      const len = Math.hypot(dx, dy);
+      const clamped = Math.min(len, maxJoy);
+      const nx = len ? (dx / len) * clamped : 0;
+      const ny = len ? (dy / len) * clamped : 0;
+      knob.style.transform = `translate(${nx}px, ${ny}px)`;
+      move.x = nx / maxJoy;
+      move.y = ny / maxJoy;
+    }
+
+    base.addEventListener('pointerdown', (e) => {
+      joyActive = true;
+      joyPointerId = e.pointerId;
+      base.setPointerCapture(joyPointerId);
+      const rect = base.getBoundingClientRect();
+      joyCenter.x = rect.left + rect.width / 2;
+      joyCenter.y = rect.top + rect.height / 2;
+      updateJoy(e.clientX, e.clientY);
+    });
+
+    base.addEventListener('pointermove', (e) => {
+      if (!joyActive || e.pointerId !== joyPointerId) return;
+      updateJoy(e.clientX, e.clientY);
+    });
+
+    function resetJoy() {
+      joyActive = false;
+      joyPointerId = null;
+      move.x = 0;
+      move.y = 0;
+      knob.style.transform = 'translate(0px, 0px)';
+    }
+
+    base.addEventListener('pointerup', (e) => {
+      if (e.pointerId !== joyPointerId) return;
+      resetJoy();
+    });
+    base.addEventListener('pointercancel', resetJoy);
+
+    jumpBtn.addEventListener('pointerdown', () => {
+      if (onGround) {
+        jumpVelocity = 0.13;
+        onGround = false;
+        setMsg('Jump!');
+      }
+    });
+
+    const keys = {};
+    window.addEventListener('keydown', (e) => {
+      keys[e.key.toLowerCase()] = true;
+      if (e.key === ' ' && onGround) {
+        jumpVelocity = 0.13;
+        onGround = false;
+      }
+    });
+    window.addEventListener('keyup', (e) => {
+      keys[e.key.toLowerCase()] = false;
+    });
+
+    // ---------- Game logic ----------
+    const camTarget = new THREE.Vector3();
+
+    function updatePlayer(dt) {
+      const speed = 7.0;
+      const kx = (keys['d'] || keys['arrowright'] ? 1 : 0) - (keys['a'] || keys['arrowleft'] ? 1 : 0);
+      const kz = (keys['s'] || keys['arrowdown'] ? 1 : 0) - (keys['w'] || keys['arrowup'] ? 1 : 0);
+
+      // Joystick: x = left/right, y = forward/back (up on joystick is negative y)
+      let inputX = Math.abs(move.x) > 0.05 || Math.abs(move.y) > 0.05 ? move.x : kx;
+      let inputZ = Math.abs(move.x) > 0.05 || Math.abs(move.y) > 0.05 ? -move.y : kz;
+
+      const len = Math.hypot(inputX, inputZ);
+      let mx = 0, mz = 0;
+      if (len > 0.12) {
+        mx = inputX / len;
+        mz = inputZ / len;
+      }
+
+      player.position.x += mx * speed * dt;
+      player.position.z += mz * speed * dt;
+
+      if (len > 0.12) {
+        player.rotation.y = Math.atan2(mx, mz);
+      }
+
+      if (!onGround) {
+        player.position.y += jumpVelocity;
+        jumpVelocity -= 0.0065;
+        if (player.position.y <= 0) {
+          player.position.y = 0;
+          jumpVelocity = 0;
+          onGround = true;
+        }
+      }
+
+      player.position.x = clamp(player.position.x, -120, 120);
+      player.position.z = clamp(player.position.z, -120, 120);
+    }
+
+    const goblinPath = [
+      new THREE.Vector3(14, 0, 9),
+      new THREE.Vector3(16, 0, 1),
+      new THREE.Vector3(12, 0, -6),
+      new THREE.Vector3(5, 0, -5),
+      new THREE.Vector3(8, 0, 8)
+    ];
+    let goblinIndex = 0;
+    const goblinSpeed = 0.015;
+
+    function updateGoblin() {
+      const target = goblinPath[goblinIndex];
+      const dx = target.x - goblin.position.x;
+      const dz = target.z - goblin.position.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist < 0.12) {
+        goblinIndex = (goblinIndex + 1) % goblinPath.length;
+      } else {
+        goblin.position.x += (dx / dist) * goblinSpeed;
+        goblin.position.z += (dz / dist) * goblinSpeed;
+        goblin.rotation.y = Math.atan2(dx, dz);
+      }
+      goblin.position.y = 0;
+    }
+
+    function updateCamera() {
+      const behind = new THREE.Vector3(0, 3.8, 7.6);
+      behind.applyAxisAngle(new THREE.Vector3(0, 1, 0), player.rotation.y);
+      camTarget.copy(player.position).add(new THREE.Vector3(0, 1.3, 0));
+      camera.position.lerp(camTarget.clone().add(behind), 0.08);
+      camera.lookAt(camTarget);
+    }
+
+    // ---------- Animate ----------
+    setTimeout(() => setMsg('Explore the village.'), 700);
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const dt = clock.getDelta();
+
+      updatePlayer(dt);
+      updateGoblin();
+      updateCamera();
+
+      // Small ambient motion
+      clouds.forEach((c, i) => {
+        c.position.x += 0.01 + i * 0.001;
+        if (c.position.x > 90) c.position.x = -90;
+      });
+
+      sun.position.x = 20 + Math.sin(performance.now() * 0.0003) * 5;
+      sun.position.z = 10 + Math.cos(performance.now() * 0.0003) * 4;
+
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    });
+  </script>
+</body>
+</html>
